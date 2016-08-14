@@ -3,23 +3,31 @@
 //how many clients should be able to telnet to this ESP8266
 #define MAX_SRV_CLIENTS 1
 #define PORT 8081
+#define MAX_PWM_VAL 5
 
 const char* ssid     = "***************";
 const char* password = "***************";
-
-// how much serial data we expect before a newline
-const unsigned int MAX_INPUT = 1024;
+// WIFI
+const unsigned int MAX_INPUT = 1024; // how much serial data we expect before a newline
 
 WiFiServer server(PORT);
 WiFiClient serverClients[MAX_SRV_CLIENTS];
 
+// State-machine
+typedef enum {  NONE, LED, DELAY } states; // the possible states of the state-machine
+states state = NONE;                                // current state-machine state
+unsigned int currentValue = 0;                          // current partial number
+unsigned int currentLed = 0;
+const unsigned int ledCount = 4;
+const unsigned int leds[] = {12, 13, 14, 15};
+
 void setup() {
   // Initializing the used pins
-  // pinMode(0, OUTPUT);  // Red led on the ESP, might be used later for debugging
-  pinMode(12, OUTPUT);
-  pinMode(13, OUTPUT);
-  pinMode(14, OUTPUT);
-  pinMode(15, OUTPUT);
+  int i;
+  for (i = 0; i < ledCount; i++) {
+    pinMode(leds[i], OUTPUT);
+  }
+  analogWriteRange(MAX_PWM_VAL);
 
   Serial.begin(115200);
   delay(100);
@@ -81,21 +89,15 @@ void loop() {
   }
 }
 
-void processIncomingByte (const byte inByte)
-{
+void processIncomingByte (const byte inByte) {
   static char input_line [MAX_INPUT];
   static unsigned int input_pos = 0;
 
-  switch (inByte)
-  {
+  switch (inByte) {
     case '\n':   // end of text
       input_line [input_pos] = 0;  // terminating null byte
-
-      // terminator reached! process input_line here ...
-      process_data (input_line);
-
-      // reset buffer for next time
-      input_pos = 0;
+      process_data (input_line);   // terminator reached! process input_line here ...
+      input_pos = 0;               // reset buffer for next time
       break;
     case '\r':   // discard carriage return
       break;
@@ -108,28 +110,56 @@ void processIncomingByte (const byte inByte)
 }
 
 // here to process incoming serial data after a terminator received
-void process_data (const char * data)
-{
+void process_data (const char* data) {
   Serial.println (data);
-  blink();
+  
+  while (*data) {
+    if (isdigit (*data)) {
+      currentValue *= 10;
+      currentValue += *data - '0';
+
+      if (state == LED) {
+        if (currentLed >= ledCount) currentLed = 0;
+        analogWrite(leds[currentLed], currentValue);
+        currentLed++;
+        currentValue = 0;
+      }
+    }
+    else {
+      // The end of the number signals a state change
+      if (state == DELAY) {
+        delay(currentValue * 100);
+      }
+      
+      currentLed = 0;
+      currentValue = 0;
+
+      // set the new state, if we recognize it
+      switch (*data) {
+        case 'L':
+          currentLed = 0;
+          state = LED;
+          break;
+        case 'D':
+          state = DELAY;
+          break;
+        default:
+          state = NONE;
+          break;
+      }
+    }
+
+    data++;
+  }
+  
+  dimLeds();
+  Serial.println ("Data processing finished");
 }
 
-void blink() {
-  digitalWrite(12, HIGH);
-  delay(50);
-  digitalWrite(12, LOW);
-  delay(50);
-  digitalWrite(13, HIGH);
-  delay(50);
-  digitalWrite(13, LOW);
-  delay(50);
-  digitalWrite(14, HIGH);
-  delay(50);
-  digitalWrite(14, LOW);
-  delay(50);
-  digitalWrite(15, HIGH);
-  delay(50);
-  digitalWrite(15, LOW);
-  delay(50);
+void dimLeds(){
+  int i;
+  for (i = 0; i < ledCount; i++) {
+    analogWrite(leds[i], 0);
+  }
 }
 
