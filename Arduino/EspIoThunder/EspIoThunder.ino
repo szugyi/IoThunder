@@ -1,165 +1,116 @@
 #include <ESP8266WiFi.h>
+#include <ESP8266mDNS.h>
+#include "ESPAsyncWebServer.h"
+#include <WiFiUdp.h>
+#include <ArduinoOTA.h>
+#include <FastLED.h>
 
-//how many clients should be able to telnet to this ESP8266
-#define MAX_SRV_CLIENTS 1
-#define PORT 8081
-#define MAX_PWM_VAL 5
+// Replace with your network credentials
+const char* ssid = "TODO: SSID";
+const char* password = "TODO: PASSWORD";
 
-const char* ssid     = "***************";
-const char* password = "***************";
-// WIFI
-const unsigned int MAX_INPUT = 1024; // how much serial data we expect before a newline
+#define LED_PIN     13
+#define NUM_LEDS    60
 
-WiFiServer server(PORT);
-WiFiClient serverClients[MAX_SRV_CLIENTS];
+int red = 0;
+int green = 0;
+int blue = 0;
+int alpha = 0;
 
-// State-machine
-typedef enum {  NONE, LED, DELAY } states; // the possible states of the state-machine
-states state = NONE;                                // current state-machine state
-unsigned int currentValue = 0;                          // current partial number
-unsigned int currentLed = 0;
-const unsigned int ledCount = 4;
-const unsigned int leds[] = {12, 13, 14, 15};
+CRGB leds[NUM_LEDS];
+
+AsyncWebServer server(80);
 
 void setup() {
-  // Initializing the used pins
-  int i;
-  for (i = 0; i < ledCount; i++) {
-    pinMode(leds[i], OUTPUT);
-  }
-  analogWriteRange(MAX_PWM_VAL);
-
-  Serial.begin(115200);
-  delay(100);
-
-  // We start by connecting to a WiFi network
-  Serial.println("===========================");
-  Serial.print("Connecting to ");
-  Serial.println(ssid);
-
-  WiFi.begin(ssid, password);
-
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
-
-  Serial.println("");
-  Serial.println("WiFi connected");
-  Serial.println("IP address: ");
-  Serial.println(WiFi.localIP());
-
-  // Start the server
-  server.begin();
-  server.setNoDelay(true);
-
-  Serial.print("Ready! Use 'telnet ");
-  Serial.print(WiFi.localIP()); Serial.print(" "); Serial.print(PORT);
-  Serial.println("' to connect");
+  setupWifi();
+  setupOTA();
+  setupLeds();
+  setupServer();  
 }
 
 void loop() {
-  uint8_t i;
-  //check if there are any new clients
-  if (server.hasClient()) {
-    for (i = 0; i < MAX_SRV_CLIENTS; i++) {
-      //find free/disconnected spot
-      if (!serverClients[i] || !serverClients[i].connected()) {
-        if (serverClients[i]) serverClients[i].stop();
-        serverClients[i] = server.available();
-        Serial.print("New client: "); Serial.print(i);
-        continue;
-      }
-    }
-    //no free/disconnected spot so reject
-    WiFiClient serverClient = server.available();
-    serverClient.stop();
-  }
-
-  //check clients for data
-  for (i = 0; i < MAX_SRV_CLIENTS; i++) {
-    if (serverClients[i] && serverClients[i].connected()) {
-      if (serverClients[i].available()) {
-        //get data from the telnet client and push it to the UART
-        while (serverClients[i].available()) {
-          processIncomingByte (serverClients[i].read ());
-        }
-      }
-    }
-  }
+  ArduinoOTA.handle();
 }
 
-void processIncomingByte (const byte inByte) {
-  static char input_line [MAX_INPUT];
-  static unsigned int input_pos = 0;
-
-  switch (inByte) {
-    case '\n':   // end of text
-      input_line [input_pos] = 0;  // terminating null byte
-      process_data (input_line);   // terminator reached! process input_line here ...
-      input_pos = 0;               // reset buffer for next time
-      break;
-    case '\r':   // discard carriage return
-      break;
-    default:
-      // keep adding if not full ... allow for terminating null byte
-      if (input_pos < (MAX_INPUT - 1))
-        input_line [input_pos++] = inByte;
-      break;
-  }
-}
-
-// here to process incoming serial data after a terminator received
-void process_data (const char* data) {
-  Serial.println (data);
+void setupWifi() {
+  Serial.begin(115200);
+  Serial.println("Booting");
   
-  while (*data) {
-    if (isdigit (*data)) {
-      currentValue *= 10;
-      currentValue += *data - '0';
-
-      if (state == LED) {
-        if (currentLed >= ledCount) currentLed = 0;
-        analogWrite(leds[currentLed], currentValue);
-        currentLed++;
-        currentValue = 0;
-      }
-    }
-    else {
-      // The end of the number signals a state change
-      if (state == DELAY) {
-        delay(currentValue * 100);
-      }
-      
-      currentLed = 0;
-      currentValue = 0;
-
-      // set the new state, if we recognize it
-      switch (*data) {
-        case 'L':
-          currentLed = 0;
-          state = LED;
-          break;
-        case 'D':
-          state = DELAY;
-          break;
-        default:
-          state = NONE;
-          break;
-      }
-    }
-
-    data++;
-  }
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
   
-  dimLeds();
-  Serial.println ("Data processing finished");
-}
-
-void dimLeds(){
-  int i;
-  for (i = 0; i < ledCount; i++) {
-    analogWrite(leds[i], 0);
+  while (WiFi.waitForConnectResult() != WL_CONNECTED) {
+    Serial.println("Connection Failed! Rebooting...");
+    delay(5000);
+    ESP.restart();
   }
 }
 
+void setupOTA() {
+  ArduinoOTA.onStart([]() {
+    Serial.println("Start");
+  });
+  ArduinoOTA.onEnd([]() {
+    Serial.println("\nEnd");
+  });
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
+    else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
+    else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
+    else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
+    else if (error == OTA_END_ERROR) Serial.println("End Failed");
+  });
+  ArduinoOTA.begin();
+  Serial.println("Ready");
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
+}
+
+void setupLeds() {
+  FastLED.addLeds<WS2812, LED_PIN, GRB>(leds, NUM_LEDS);
+  FastLED.setBrightness(5);
+
+  setColor(CRGB(255, 193, 7));  
+}
+
+void setupServer() {
+  server.on("/color", HTTP_POST, [](AsyncWebServerRequest *request) {
+    handleColorRequest(request);
+    
+    request->send(200, "text/plain", "OK");
+  });
+  
+  server.begin();
+}
+
+void handleColorRequest(AsyncWebServerRequest *request) {
+  int params = request->params();
+
+  for(int i = 0; i < params; i++) {
+    AsyncWebParameter* p = request->getParam(i);
+
+    if(p->name() == "red") {
+      red = p->value().toInt();
+    } else if(p->name() == "green") {
+      green = p->value().toInt();
+    } else if(p->name() == "blue") {
+      blue = p->value().toInt();
+    } else if(p->name() == "alpha") {
+      alpha = p->value().toInt();
+    }
+  }
+
+  FastLED.setBrightness(alpha);
+  setColor(CRGB(red, green, blue));
+}
+
+void setColor(CRGB color) {
+  for (int i = 0; i < NUM_LEDS; i++) {
+    leds[i] = color;
+    FastLED.show();
+  }
+}
